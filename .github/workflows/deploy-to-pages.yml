@@ -1,0 +1,87 @@
+name: Build and deploy OurSpace to GitHub Pages
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v4
+
+    - name: Use Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Install dependencies
+      run: |
+        npm ci
+      working-directory: .
+
+    - name: Build
+      run: |
+        npm run build
+      working-directory: .
+
+    - name: Prepare and push to pages repo
+      env:
+        PAGES_REPO_TOKEN: ${{ secrets.PAGES_REPO_PAT }}
+        TARGET_REPO: 11-01/11-01.github.io
+        TARGET_BRANCH: move-ourspace-to-root
+        BUILD_DIR: dist
+      run: |
+        set -e
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "Build directory '$BUILD_DIR' not found. Make sure 'npm run build' outputs to $BUILD_DIR." >&2
+          exit 1
+        fi
+
+        # Clone the target repo using the provided PAT
+        git clone --depth 1 https://x-access-token:${PAGES_REPO_TOKEN}@github.com/${TARGET_REPO}.git target_repo
+        cd target_repo
+
+        # Create or checkout the target branch
+        if git rev-parse --verify origin/${TARGET_BRANCH} >/dev/null 2>&1; then
+          git checkout ${TARGET_BRANCH}
+        else
+          git checkout --orphan ${TARGET_BRANCH}
+          git rm -rf . || true
+        fi
+
+        # Preserve CNAME if it exists in the target repo
+        if [ -f CNAME ]; then
+          cp CNAME /tmp/CNAME_backup || true
+        fi
+
+        # Remove existing files except .git
+        find . -maxdepth 1 ! -name '.' ! -name '.git' -exec rm -rf {} + || true
+
+        # Copy built files from workflow workspace
+        cd ..
+        cp -r ${BUILD_DIR}/* target_repo/ || true
+
+        cd target_repo
+        # Restore CNAME if it existed
+        if [ -f /tmp/CNAME_backup ]; then
+          mv /tmp/CNAME_backup CNAME || true
+        fi
+
+        git add -A
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Deploy OurSpace build to ${TARGET_BRANCH}"
+          git push --force https://x-access-token:${PAGES_REPO_TOKEN}@github.com/${TARGET_REPO}.git ${TARGET_BRANCH}
+        fi
